@@ -7,9 +7,11 @@
 <title>TV Remote · Bluetooth</title>
 <link rel="manifest" href="manifest.webmanifest">
 <!--
-  Bluetooth-only remote for a Web Bluetooth browser (Bluefy on iPhone, Chrome on Android), hosted on GitHub Pages so it
-  opens over any internet connection even when the TV is off Wi-Fi. Self-contained: no fonts, icons or scripts from
-  elsewhere; sw.js keeps a copy on browsers that support service workers. Talks to Night Watch's BleRemote service (tv-launcher/.../BleRemote.java):
+  The remote's front door, hosted on GitHub Pages so it opens over any internet connection. It first checks whether the
+  TV answers over Wi-Fi: if so it goes straight to the full remote on the TV; if not it stays as a Bluetooth rescue
+  remote (connect, Power, turn the TV's Wi-Fi on, basic keys) and moves to the full remote once the TV is back.
+  Bluetooth needs a Web Bluetooth browser (Bluefy on iPhone, Chrome on Android). Self-contained: no fonts, icons or
+  scripts from elsewhere; sw.js keeps a copy on browsers that support service workers. ?stay=1 skips the redirect. Talks to Night Watch's BleRemote service (tv-launcher/.../BleRemote.java):
   write {"i":1,"p":"key","b":{"key":"up"}} to the command characteristic, results come back as notifications.
 -->
 <style>
@@ -85,6 +87,13 @@
   .apps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
   .apps button { height: 46px; border-radius: 14px; font-size: 13px; color: var(--text); }
   .note { font-size: 12px; color: var(--dim); text-align: center; line-height: 1.5; }
+  .check { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 8px 8px 12px; border-radius: 18px;
+    background: var(--btn); border: 1px solid rgba(var(--a), .35); }
+  .check p { margin: 0; flex: 1; font-size: 13px; line-height: 1.35; }
+  .check b { display: block; font-size: 10px; font-weight: 400; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+  .check button { flex: none; height: 34px; padding: 0 12px; border-radius: 999px; border-color: var(--amber);
+    color: var(--amber-lt); background: rgba(var(--a), .06); font-size: 13px; }
+  .note a { color: var(--text-2); }
   .toast { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 10px); translate: -50% 0; max-width: 90vw;
     padding: 10px 16px; border-radius: 999px; background: var(--raised); box-shadow: 0 0 0 1px rgba(var(--a), .6);
     font-size: 14px; opacity: 0; transition: opacity .2s ease; pointer-events: none; }
@@ -102,6 +111,11 @@
       <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.6a8 8 0 1 0 11.4 0"/></svg>
     </button>
   </header>
+
+  <div class="check" id="check">
+    <p><b id="checkHead">Checking the TV</b><span id="checkText">Looking for the TV on Wi-Fi…</span></p>
+    <button id="openRemote" type="button">Open remote</button>
+  </div>
 
   <button class="connect" id="connect">
     <svg viewBox="0 0 24 24"><path d="M7 7l10 10-5 4V3l5 4L7 17"/></svg>Connect to the TV
@@ -146,6 +160,7 @@
   <p class="note" id="note">Works over Bluetooth only, so it keeps working when the TV's Wi-Fi is down.<br>
     Open it once on Wi-Fi and the phone keeps a copy for offline use.</p>
   <p class="note" id="offline">Offline copy: checking…</p>
+  <p class="note">TV address: <a href="#" id="tvAddr"></a> · <a href="?stay=1">stay on this page</a></p>
 </main>
 <div class="toast" id="toast"></div>
 
@@ -241,6 +256,52 @@
   document.querySelectorAll('[data-app]').forEach(b => b.addEventListener('click', () => send('app', { app: b.dataset.app })));
   // When the TV's Wi-Fi was switched off in settings: the one thing Bluetooth can fix so Wi-Fi remotes work again.
   $('wifiOn').addEventListener('click', () => { send('wifi/on', {}); toast('Turning the TV’s Wi-Fi on…'); });
+
+  // Front door: the full remote lives on the TV. If the TV answers over Wi-Fi, go there; if not, stay here as the
+  // Bluetooth rescue remote and keep looking, then go there as soon as it's back (after Power or "Wi-Fi on").
+  const stay = new URLSearchParams(location.search).has('stay');
+  const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+                  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+  let tvHost = store.get('tvHost') || '192.168.68.104';
+  const remoteUrl = () => `https://${tvHost}:8765/`;
+  $('tvAddr').textContent = tvHost;
+  $('tvAddr').addEventListener('click', e => {
+    e.preventDefault();
+    const v = prompt('TV address on your Wi-Fi (IP or name)', tvHost);
+    if (v && v.trim()) { tvHost = v.trim(); store.set('tvHost', tvHost); $('tvAddr').textContent = tvHost; look(); }
+  });
+  $('openRemote').addEventListener('click', () => location.href = remoteUrl());
+
+  // An opaque no-cors request: it resolves if the TV's server answers over https at all and fails if nothing is there
+  // (TV off Wi-Fi), so it needs no special headers on the TV. A phone that doesn't trust the TV's certificate also
+  // fails it, and stays here with the "Open remote" button.
+  async function reachable() {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 2500);
+    try {
+      await fetch(`${remoteUrl()}status?probe=${Date.now()}`, { mode: 'no-cors', cache: 'no-store', signal: c.signal });
+      return true;
+    } catch { return false; } finally { clearTimeout(t); }
+  }
+  let looking = false;
+  async function look() {
+    if (looking) return;
+    looking = true;
+    const ok = await reachable();
+    looking = false;
+    if (ok && !stay) {
+      $('checkHead').textContent = 'TV is on Wi-Fi';
+      $('checkText').textContent = 'Opening the full remote…';
+      location.replace(remoteUrl());
+      return;
+    }
+    $('checkHead').textContent = ok ? 'TV is on Wi-Fi' : 'TV isn’t on Wi-Fi';
+    $('checkText').textContent = ok ? 'Staying here because of ?stay=1.'
+      : 'Connect over Bluetooth, then press Power or turn its Wi-Fi on. The full remote opens by itself once the TV is back.';
+  }
+  look();
+  setInterval(() => { if (!document.hidden) look(); }, 4000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) look(); });
 
   // Keep a copy on the phone so the page opens without reaching the TV, and say whether this browser can.
   const offline = t => { $('offline').textContent = 'Offline copy: ' + t; };
