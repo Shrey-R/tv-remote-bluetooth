@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0e13">
+<title>TV Remote · Bluetooth</title>
+<link rel="manifest" href="manifest.webmanifest">
+<!--
+  Bluetooth-only remote for a Web Bluetooth browser (Bluefy on iPhone, Chrome on Android), hosted on GitHub Pages so it
+  opens over any internet connection even when the TV is off Wi-Fi. Self-contained: no fonts, icons or scripts from
+  elsewhere; sw.js keeps a copy on browsers that support service workers. Talks to Night Watch's BleRemote service (tv-launcher/.../BleRemote.java):
+  write {"i":1,"p":"key","b":{"key":"up"}} to the command characteristic, results come back as notifications.
+-->
+<style>
+  :root {
+    --amber: #e0b552; --amber-lt: #f0c96a; --a: 224, 181, 82;
+    --bg-top: #121319; --bg-bottom: #0d0e13; --btn: #181a22; --edge: #262832; --raised: #1c1e27;
+    --text: #e9e9ed; --text-btn: #e4e7f5; --text-2: #b2b6ca; --muted: #9397ab; --dim: #75798c; --red: #ef5350;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { background: var(--bg-bottom); }
+  body {
+    margin: 0; min-height: 100vh; color: var(--text);
+    background: linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+    font: 400 15px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    user-select: none; -webkit-user-select: none; touch-action: manipulation;
+  }
+  main {
+    max-width: 440px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px;
+    padding: max(48px, calc(env(safe-area-inset-top) + 24px)) 22px calc(env(safe-area-inset-bottom) + 24px);
+  }
+  button {
+    font: inherit; color: var(--text-btn); background: var(--btn); border: 1px solid var(--edge);
+    display: grid; place-items: center; padding: 0; cursor: pointer;
+    transition: transform .08s ease, box-shadow .12s ease;
+  }
+  button:active { box-shadow: 0 0 0 2px var(--amber), 0 0 18px rgba(var(--a), .3); transform: scale(.96); }
+  button:disabled { opacity: .35; }
+  .round { border-radius: 50%; }
+  svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  header { display: flex; align-items: center; justify-content: space-between; }
+  .brand { font-size: 11px; letter-spacing: .32em; text-transform: uppercase; color: var(--muted); }
+  .tv-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .dot.on { background: var(--amber); box-shadow: 0 0 10px rgba(var(--a), .3), 0 0 3px var(--amber); }
+  .tv-name { font-size: 18px; font-weight: 500; }
+  .tv-state { font-size: 13px; color: var(--muted); }
+  .power { width: 52px; height: 52px; color: var(--red); }
+
+  .connect {
+    height: 52px; border-radius: 999px; border: 1px solid var(--amber); color: var(--amber-lt);
+    background: rgba(var(--a), .06); font-size: 16px; font-weight: 500; display: flex; gap: 8px;
+  }
+  .connect[hidden] { display: none; }
+
+  .keys { display: flex; justify-content: space-between; }
+  .key { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .key button { width: 52px; height: 52px; }
+  .key span { font-size: 11px; color: var(--muted); }
+
+  .pad {
+    position: relative; align-self: center; width: min(300px, calc(100vw - 80px)); aspect-ratio: 1; border-radius: 50%;
+    border: 1px solid #1e2028; background: #101117; padding: 10px;
+  }
+  .face { position: relative; width: 100%; height: 100%; border-radius: 50%; border: 1px solid var(--edge);
+    background: radial-gradient(circle, #1b1d26, #13141a); }
+  .arrow { position: absolute; width: 26.7%; height: 26.7%; border: 0; border-radius: 50%; background: transparent; color: var(--text-2); }
+  .arrow:active { color: var(--amber-lt); background: rgba(var(--a), .06); box-shadow: none; }
+  .up { top: 0; left: 50%; translate: -50% 0; } .down { bottom: 0; left: 50%; translate: -50% 0; }
+  .left { left: 0; top: 50%; translate: 0 -50%; } .right { right: 0; top: 50%; translate: 0 -50%; }
+  .ok { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: 37.3%; height: 37.3%; border: 0;
+    background: var(--raised); box-shadow: 0 0 0 1px rgba(var(--a), .45), 0 0 22px rgba(var(--a), .18);
+    font-size: 17px; font-weight: 500; letter-spacing: .12em; }
+  .ok:active { translate: -50% -50%; }
+
+  .vol-row { display: flex; gap: 12px; align-items: center; }
+  .mute { width: 58px; height: 58px; flex: none; }
+  .vol { flex: 1; height: 58px; border-radius: 999px; background: var(--btn); border: 1px solid var(--edge);
+    display: flex; align-items: center; justify-content: space-between; padding: 0 5px; }
+  .vol button { width: 46px; height: 46px; background: var(--raised); }
+  .vol span { color: var(--text-2); font-size: 13px; letter-spacing: .2em; }
+
+  .apps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .apps button { height: 46px; border-radius: 14px; font-size: 13px; color: var(--text); }
+  .note { font-size: 12px; color: var(--dim); text-align: center; line-height: 1.5; }
+  .toast { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 10px); translate: -50% 0; max-width: 90vw;
+    padding: 10px 16px; border-radius: 999px; background: var(--raised); box-shadow: 0 0 0 1px rgba(var(--a), .6);
+    font-size: 14px; opacity: 0; transition: opacity .2s ease; pointer-events: none; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="brand">Lawrasur · Bluetooth</div>
+      <div class="tv-row"><span class="dot" id="dot"></span><span class="tv-name">Haier TV</span><span class="tv-state" id="state">not connected</span></div>
+    </div>
+    <button class="round power" data-key="power" aria-label="Power">
+      <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.6a8 8 0 1 0 11.4 0"/></svg>
+    </button>
+  </header>
+
+  <button class="connect" id="connect">
+    <svg viewBox="0 0 24 24"><path d="M7 7l10 10-5 4V3l5 4L7 17"/></svg>Connect to the TV
+  </button>
+
+  <div class="keys">
+    <div class="key"><button class="round" data-key="input" aria-label="Source"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/></svg></button><span>Source</span></div>
+    <div class="key"><button class="round" data-key="back" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button><span>Back</span></div>
+    <div class="key"><button class="round" data-key="home" aria-label="Home"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></button><span>Home</span></div>
+    <div class="key"><button class="round" data-key="menu" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><span>Menu</span></div>
+    <div class="key"><button class="round" data-key="play_pause" aria-label="Play or pause"><svg viewBox="0 0 24 24"><path d="M4 5l9 7-9 7z"/><path d="M16 5v14M20 5v14"/></svg></button><span>Play</span></div>
+  </div>
+
+  <div class="pad"><div class="face">
+    <button class="arrow up" data-key="up" data-repeat aria-label="Up"><svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg></button>
+    <button class="arrow left" data-key="left" data-repeat aria-label="Left"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+    <button class="round ok" data-key="ok">OK</button>
+    <button class="arrow right" data-key="right" data-repeat aria-label="Right"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+    <button class="arrow down" data-key="down" data-repeat aria-label="Down"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+  </div></div>
+
+  <div class="vol-row">
+    <button class="round mute" data-key="mute" aria-label="Mute"><svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l4 6M21 9l-4 6"/></svg></button>
+    <div class="vol">
+      <button class="round" data-key="vol_down" data-repeat aria-label="Volume down"><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+      <span>VOL</span>
+      <button class="round" data-key="vol_up" data-repeat aria-label="Volume up"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg></button>
+    </div>
+  </div>
+
+  <button class="connect" id="wifiOn" style="border-color:var(--edge);color:var(--text)">
+    <svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0"/><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.5h.01"/></svg>Turn the TV's Wi-Fi on
+  </button>
+
+  <div class="apps">
+    <button data-app="youtube">YouTube</button>
+    <button data-app="netflix">Netflix</button>
+    <button data-app="prime">Prime</button>
+    <button data-app="hotstar">Hotstar</button>
+  </div>
+
+  <p class="note" id="note">Works over Bluetooth only, so it keeps working when the TV's Wi-Fi is down.<br>
+    Open it once on Wi-Fi and the phone keeps a copy for offline use.</p>
+  <p class="note" id="offline">Offline copy: checking…</p>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+  // Must match BleRemote.java on the TV.
+  const SERVICE = 'f2f50001-1c0e-4349-9c37-2281906ff403';
+  const COMMAND = 'f2f50002-1c0e-4349-9c37-2281906ff403';
+  const RESULT = 'f2f50003-1c0e-4349-9c37-2281906ff403';
+  const $ = id => document.getElementById(id);
+  let device = null, command = null, nextId = 1, busy = Promise.resolve();
+
+  let toastTimer;
+  function toast(text) {
+    $('toast').textContent = text;
+    $('toast').classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => $('toast').classList.remove('show'), 2500);
+  }
+  function setState(text, on) {
+    $('state').textContent = text;
+    $('dot').classList.toggle('on', !!on);
+    $('connect').hidden = !!on;
+  }
+
+  if (!navigator.bluetooth) {
+    setState('no Bluetooth here');
+    $('connect').disabled = true;
+    $('note').textContent = 'This browser has no Web Bluetooth. On iPhone open this page in Bluefy; on Android use Chrome.';
+  }
+
+  async function attach(d) {
+    device = d;
+    device.addEventListener('gattserverdisconnected', () => {
+      command = null;
+      setState('reconnecting…');
+      setTimeout(() => device && attach(device).catch(() => setState('not connected')), 1000);
+    });
+    setState('connecting…');
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    command = await service.getCharacteristic(COMMAND);
+    const result = await service.getCharacteristic(RESULT);
+    result.addEventListener('characteristicvaluechanged', e => {
+      try {
+        const r = JSON.parse(new TextDecoder().decode(e.target.value));
+        if (r.c && r.c !== 200) toast(r.m === 'tv is off' ? 'TV is off: press Power' : (r.m || 'TV said ' + r.c));
+      } catch {}
+    });
+    // Subscribing needs an encrypted link: the first time, the phone and TV show a code to confirm.
+    setState('pairing… check the TV');
+    await result.startNotifications();
+    setState('connected · BT', true);
+  }
+
+  $('connect').addEventListener('click', async () => {
+    try {
+      const d = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
+      await attach(d);
+    } catch (err) {
+      setState('not connected');
+      if (err && err.name !== 'NotFoundError') toast('Couldn’t connect: ' + (err.message || err));
+    }
+  });
+
+  // A remembered TV (Chrome; Bluefy if it supports it): reconnect without the picker.
+  (async () => {
+    try {
+      const known = navigator.bluetooth && navigator.bluetooth.getDevices ? await navigator.bluetooth.getDevices() : [];
+      if (known.length) await attach(known[0]);
+    } catch {}
+  })();
+
+  function send(path, body) {
+    if (!command) { toast('Tap “Connect to the TV” first'); return; }
+    const data = new TextEncoder().encode(JSON.stringify({ i: nextId++, p: path, b: body }));
+    // One write at a time: GATT allows a single operation in flight.
+    busy = busy.then(() => command.writeValueWithResponse(data)).catch(() => toast('Bluetooth hiccup: press again'));
+  }
+
+  document.querySelectorAll('[data-key]').forEach(b => {
+    const key = b.dataset.key;
+    if (!('repeat' in b.dataset)) { b.addEventListener('click', () => send('key', { key })); return; }
+    // Arrows and volume repeat while held: once at once, then every 150 ms after 400 ms.
+    let timer;
+    const stop = () => { clearTimeout(timer); clearInterval(timer); };
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      send('key', { key });
+      timer = setTimeout(() => { timer = setInterval(() => send('key', { key }), 150); }, 400);
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => b.addEventListener(t, stop));
+  });
+  document.querySelectorAll('[data-app]').forEach(b => b.addEventListener('click', () => send('app', { app: b.dataset.app })));
+  // When the TV's Wi-Fi was switched off in settings: the one thing Bluetooth can fix so Wi-Fi remotes work again.
+  $('wifiOn').addEventListener('click', () => { send('wifi/on', {}); toast('Turning the TV’s Wi-Fi on…'); });
+
+  // Keep a copy on the phone so the page opens without reaching the TV, and say whether this browser can.
+  const offline = t => { $('offline').textContent = 'Offline copy: ' + t; };
+  if (!('serviceWorker' in navigator) || !window.caches) {
+    // Say why: service workers need a secure page, so a certificate the browser only half-trusts hides them too.
+    offline('not supported in this browser (needs Wi-Fi to open) · secure page: ' + (window.isSecureContext ? 'yes' : 'no')
+      + ' · service worker: ' + ('serviceWorker' in navigator ? 'yes' : 'no') + ' · cache: ' + (window.caches ? 'yes' : 'no'));
+  } else {
+    navigator.serviceWorker.register('sw.js')
+      .then(() => navigator.serviceWorker.ready)
+      .then(() => caches.match(new URL('./', location.href).href))
+      .then(hit => offline(hit ? 'saved ✓ (opens without Wi-Fi)' : 'saving… reopen once on Wi-Fi'))
+      .catch(err => offline('failed: ' + (err && err.message || err)));
+  }
+</script>
+</body>
+</html>
