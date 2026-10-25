@@ -3,9 +3,9 @@
 Bookmark this page. It checks whether the TV answers over Wi-Fi:
 
 - **Yes:** it opens the full remote on the TV.
-- **No:** it helps get the TV back on Wi-Fi over Bluetooth: **Connect to the TV**, then **Turn on the TV's Wi-Fi**
-  (it wakes the TV first if it's in standby). Once connected it asks the TV over Bluetooth whether it's on Wi-Fi and at
-  which address, so a changed IP is picked up too, and opens the full remote there by itself.
+- **No:** tap **Connect to the TV** (Bluetooth; browsers need that one tap) and the rest is automatic: it asks the
+  TV whether it's on Wi-Fi and at which address (a changed IP is picked up), wakes it if it's in standby, turns its
+  Wi-Fi on, waits until it answers, then opens the full remote. Power and Screensaver buttons work over Bluetooth too.
 
 The remote opens over http unless this phone trusts the TV's https certificate; the TV's own page moves trusted phones
 to https by itself.

@@ -1,6 +1,6 @@
 // Keeps the Bluetooth remote on the phone where the browser supports service workers (Chrome on Android; not Bluefy).
 // Network first, so an updated page arrives whenever there's internet; the saved copy otherwise.
-const CACHE = 'tv-remote-bt-v2';
+const CACHE = 'tv-remote-bt-v3';
 const FILES = ['./', 'index.html', 'manifest.webmanifest'].map(f => new URL(f, self.registration.scope).href);
 
 self.addEventListener('install', e => {
