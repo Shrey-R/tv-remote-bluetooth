@@ -111,9 +111,19 @@
   const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
                   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
   const stay = new URLSearchParams(location.search).has('stay');
+  let command = null, nextId = 1, busy = Promise.resolve();   // Bluetooth link, set once connected
+  const waiting = new Map();   // Bluetooth requests waiting for the TV: id -> {resolve, pieces}
 
   let tvHost = store.get('tvHost') || '192.168.68.104';
-  const remoteUrl = () => `https://${tvHost}:8765/`;
+  // https only when this phone trusts the TV's certificate; otherwise http, and the TV's own page moves trusted phones
+  // to https by itself.
+  const remoteUrl = (secure = false) => `${secure ? 'https' : 'http'}://${tvHost}:8765/`;
+  function setHost(ip) {
+    if (!ip || ip === tvHost) return;
+    tvHost = ip;
+    store.set('tvHost', ip);
+    $('addr').textContent = ip;
+  }
   $('addr').textContent = tvHost;
   $('addr').addEventListener('click', e => {
     e.preventDefault();
@@ -129,15 +139,21 @@
   }
 
   // ---------- Is the TV on Wi-Fi? ----------
-  // An opaque no-cors request: it resolves if the TV's server answers over https at all and fails if nothing is there,
-  // so it needs no special headers on the TV. A phone that doesn't trust the TV's certificate fails it too.
+  // First over Wi-Fi: an opaque no-cors https request resolves if the TV's server answers at the saved address (and
+  // this phone trusts its certificate), with no special headers needed on the TV. If that fails and Bluetooth is
+  // connected, ask the TV itself: Night Watch says whether it's on Wi-Fi and at which (possibly new) address.
   async function reachable() {
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), 2500);
     try {
-      await fetch(`${remoteUrl()}status?probe=${Date.now()}`, { mode: 'no-cors', cache: 'no-store', signal: c.signal });
-      return true;
-    } catch { return false; } finally { clearTimeout(t); }
+      await fetch(`${remoteUrl(true)}status?probe=${Date.now()}`, { mode: 'no-cors', cache: 'no-store', signal: c.signal });
+      return 'https';
+    } catch {} finally { clearTimeout(t); }
+    if (command) {
+      const r = await ask({ g: '/net' });
+      if (r.body && r.body.wifi && r.body.ip) { setHost(r.body.ip); return 'http'; }
+    }
+    return null;
   }
 
   let looking = false, gone = false, wifiSent = false;
@@ -147,9 +163,10 @@
     const ok = await reachable();
     looking = false;
     if (ok) {
-      show('Your remote is ready', stay ? 'The TV is on Wi-Fi. Tap “Open the remote” below.' : 'Opening it now…', 'ok');
+      show('Your remote is ready', stay ? `The TV is on Wi-Fi at ${tvHost}. Tap “Open the remote” below.`
+        : `The TV is on Wi-Fi at ${tvHost}. Opening it now…`, 'ok');
       $('steps').hidden = true;
-      if (!stay) { gone = true; setTimeout(() => location.replace(remoteUrl()), 600); }
+      if (!stay) { gone = true; setTimeout(() => location.replace(remoteUrl(ok === 'https')), 600); }
       return;
     }
     $('steps').hidden = false;
@@ -161,8 +178,6 @@
   document.addEventListener('visibilitychange', () => { if (!document.hidden) look(); });
 
   // ---------- Bluetooth ----------
-  let command = null, nextId = 1, busy = Promise.resolve();
-  const waiting = new Map();   // id -> {resolve, pieces, n}
 
   if (!navigator.bluetooth) {
     $('connect').disabled = true;
@@ -214,6 +229,7 @@
     $('step1').classList.add('done');
     $('s1').textContent = 'Connected over Bluetooth';
     $('wifi').disabled = false;
+    look();   // ask the TV right away: it may already be on Wi-Fi, just at a new address
   }
 
   $('connect').addEventListener('click', async () => {
